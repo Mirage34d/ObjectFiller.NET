@@ -55,7 +55,7 @@ namespace Tynamix.ObjectFiller
         /// </summary>
         public T Create()
         {
-            T objectToFill = (T)CreateInstanceOfType(typeof(T), _setupManager.GetFor<T>(), new HashStack<Type>());
+            var objectToFill = (T)CreateInstanceOfType(typeof(T).GetTypeInfo(), _setupManager.GetFor<T>(), new HashStack<TypeInfo>());
 
             Fill(objectToFill);
 
@@ -68,10 +68,10 @@ namespace Tynamix.ObjectFiller
         /// </summary>
         public IEnumerable<T> Create(int count)
         {
-            var typeStack = new HashStack<Type>();
+            var typeStack = new HashStack<TypeInfo>();
             for (int n = 0; n < count; n++)
             {
-                T objectToFill = (T)CreateInstanceOfType(typeof(T), _setupManager.GetFor<T>(), typeStack);
+                T objectToFill = (T)CreateInstanceOfType(typeof(T).GetTypeInfo(), _setupManager.GetFor<T>(), typeStack);
                 Fill(objectToFill);
                 yield return objectToFill;
             }
@@ -88,22 +88,25 @@ namespace Tynamix.ObjectFiller
         }
 
 
-        private object CreateInstanceOfType(Type type, FillerSetupItem currentSetupItem, HashStack<Type> typeTracker)
+        private object CreateInstanceOfType(TypeInfo type, FillerSetupItem currentSetupItem, HashStack<TypeInfo> typeTracker)
         {
             List<object> constructorArgs = new List<object>();
 
-            if (type.GetConstructors().All(ctor => ctor.GetParameters().Length != 0))
+            //if (type.GetConstructors().All(ctor => ctor.GetParameters().Length != 0))
+            if (type.DeclaredConstructors.All(ctor => ctor.GetParameters().Length != 0))
             {
                 IEnumerable<ConstructorInfo> ctorInfos;
-                if ((ctorInfos = type.GetConstructors().Where(ctr => ctr.GetParameters().Length != 0)).Count() != 0)
+                //if ((ctorInfos = type.GetConstructors().Where(ctr => ctr.GetParameters().Length != 0)).Count() != 0)
+
+                if ((ctorInfos = type.DeclaredConstructors.Where(ctr => ctr.GetParameters().Length != 0)).Count() != 0)
                 {
                     foreach (ConstructorInfo ctorInfo in ctorInfos.OrderBy(x => x.GetParameters().Length))
                     {
-                        Type[] paramTypes = ctorInfo.GetParameters().Select(p => p.ParameterType).ToArray();
+                        var paramTypes = ctorInfo.GetParameters().Select(p => p.ParameterType.GetTypeInfo()).ToArray();
 
                         if (paramTypes.All(t => TypeIsValidForObjectFiller(t, currentSetupItem)))
                         {
-                            foreach (Type paramType in paramTypes)
+                            foreach (var paramType in paramTypes)
                             {
                                 constructorArgs.Add(GetFilledObject(paramType, currentSetupItem, typeTracker));
                             }
@@ -121,25 +124,37 @@ namespace Tynamix.ObjectFiller
                 }
             }
 
-            object result = Activator.CreateInstance(type, constructorArgs.ToArray());
+            object result = Activator.CreateInstance(type.AsType(), constructorArgs.ToArray());
             return result;
         }
 
+        public IEnumerable<PropertyInfo> GetAllProperties(TypeInfo type, List<PropertyInfo> storage = null)
+        {
+            if (storage == null)
+                storage = new List<PropertyInfo>();
 
-        private void FillInternal(object objectToFill, HashStack<Type> typeTracker = null)
+            storage.AddRange(type.DeclaredProperties);
+
+            if (type.BaseType != typeof (object))
+                return GetAllProperties(type.BaseType.GetTypeInfo(), storage);
+            
+            return storage;
+        }
+
+        private void FillInternal(object objectToFill, HashStack<TypeInfo> typeTracker = null)
         {
             var currentSetup = _setupManager.GetFor(objectToFill.GetType());
-            var targetType = objectToFill.GetType();
+            var targetType = objectToFill.GetType().GetTypeInfo();
 
-            typeTracker = typeTracker ?? new HashStack<Type>();
+            typeTracker = typeTracker ?? new HashStack<TypeInfo>();
 
             if (currentSetup.TypeToRandomFunc.ContainsKey(targetType))
             {
                 objectToFill = currentSetup.TypeToRandomFunc[targetType]();
                 return;
             }
-
-            var properties = targetType.GetProperties()
+             
+            var properties = GetAllProperties(targetType)
                              .Where(x => GetSetMethodOnDeclaringType(x) != null).ToArray();
 
             if (properties.Length == 0) return;
@@ -165,7 +180,7 @@ namespace Tynamix.ObjectFiller
                     continue;
                 }
 
-                object filledObject = GetFilledObject(property.PropertyType, currentSetup, typeTracker);
+                object filledObject = GetFilledObject(property.PropertyType.GetTypeInfo(), currentSetup, typeTracker);
 
                 SetPropertyValue(property, objectToFill, filledObject);
             }
@@ -197,10 +212,16 @@ namespace Tynamix.ObjectFiller
 
             var propertiesWithoutOrder = properties.Where(x => !ContainsProperty(currentSetupItem.PropertyOrder.Keys, x)).ToList();
 
+            //firstProperties.ForEach(propertyQueue.Enqueue);
+            foreach (var firstProperty in firstProperties)
+                propertyQueue.Enqueue(firstProperty);
 
-            firstProperties.ForEach(propertyQueue.Enqueue);
-            propertiesWithoutOrder.ForEach(propertyQueue.Enqueue);
-            lastProperties.ForEach(propertyQueue.Enqueue);
+            //propertiesWithoutOrder.ForEach(propertyQueue.Enqueue);
+            foreach (var propertyInfo in propertiesWithoutOrder)
+                propertyQueue.Enqueue(propertyInfo);
+
+            foreach (var propertyInfo in lastProperties)
+                propertyQueue.Enqueue(propertyInfo);
 
             return propertyQueue;
         }
@@ -217,24 +238,24 @@ namespace Tynamix.ObjectFiller
 
         private MethodInfo GetSetMethodOnDeclaringType(PropertyInfo propInfo)
         {
-            var methodInfo = propInfo.GetSetMethod(true);
+            var methodInfo = propInfo.SetMethod;
 
 
             if (propInfo.DeclaringType != null)
                 return methodInfo ?? propInfo
                     .DeclaringType
-                    .GetProperty(propInfo.Name)
-                    .GetSetMethod(true);
+                    .GetRuntimeProperty(propInfo.Name)
+                    .SetMethod;
 
             return null;
         }
 
         private IEnumerable<PropertyInfo> GetPropertyFromProperties(IEnumerable<PropertyInfo> properties, PropertyInfo property)
         {
-            return properties.Where(x => x.MetadataToken == property.MetadataToken && x.Module.Equals(property.Module));
+            return properties.Where(x => x.Name == property.Name && x.Module.Equals(property.Module));
         }
 
-        private object GetFilledObject(Type type, FillerSetupItem currentSetupItem, HashStack<Type> typeTracker = null)
+        private object GetFilledObject(TypeInfo type, FillerSetupItem currentSetupItem, HashStack<TypeInfo> typeTracker = null)
         {
             if (HasTypeARandomFunc(type, currentSetupItem))
             {
@@ -273,10 +294,10 @@ namespace Tynamix.ObjectFiller
             return newValue;
         }
 
-        private object GetRandomEnumValue(Type type)
+        private object GetRandomEnumValue(TypeInfo type)
         {
             // performance: Enum.GetValues() is slow due to reflection, should cache it
-            Array values = Enum.GetValues(type);
+            Array values = Enum.GetValues(type.AsType());
             if (values.Length > 0)
             {
                 int index = Random.Next() % values.Length;
@@ -285,7 +306,7 @@ namespace Tynamix.ObjectFiller
             return 0;
         }
 
-        private bool CheckForCircularReference(Type targetType, HashStack<Type> typeTracker, FillerSetupItem currentSetupItem)
+        private bool CheckForCircularReference(TypeInfo targetType, HashStack<TypeInfo> typeTracker, FillerSetupItem currentSetupItem)
         {
             if (typeTracker != null)
             {
@@ -306,7 +327,7 @@ namespace Tynamix.ObjectFiller
             return false;
         }
 
-        private object GetFilledPoco(Type type, FillerSetupItem currentSetupItem, HashStack<Type> typeTracker)
+        private object GetFilledPoco(TypeInfo type, FillerSetupItem currentSetupItem, HashStack<TypeInfo> typeTracker)
         {
             if (CheckForCircularReference(type, typeTracker, currentSetupItem))
             {
@@ -327,11 +348,11 @@ namespace Tynamix.ObjectFiller
             return result;
         }
 
-        private IDictionary GetFilledDictionary(Type propertyType, FillerSetupItem currentSetupItem, HashStack<Type> typeTracker)
+        private IDictionary GetFilledDictionary(TypeInfo propertyType, FillerSetupItem currentSetupItem, HashStack<TypeInfo> typeTracker)
         {
-            IDictionary dictionary = (IDictionary)Activator.CreateInstance(propertyType);
-            Type keyType = propertyType.GetGenericArguments()[0];
-            Type valueType = propertyType.GetGenericArguments()[1];
+            IDictionary dictionary = (IDictionary)Activator.CreateInstance(propertyType.AsType());
+            var keyType = propertyType.GenericTypeArguments[0].GetTypeInfo();
+            var valueType = propertyType.GenericTypeArguments[1].GetTypeInfo();
 
             int maxDictionaryItems = Random.Next(currentSetupItem.DictionaryKeyMinCount,
                 currentSetupItem.DictionaryKeyMaxCount);
@@ -352,15 +373,15 @@ namespace Tynamix.ObjectFiller
             return dictionary;
         }
 
-        private static bool HasTypeARandomFunc(Type type, FillerSetupItem currentSetupItem)
+        private static bool HasTypeARandomFunc(TypeInfo type, FillerSetupItem currentSetupItem)
         {
             return currentSetupItem.TypeToRandomFunc.ContainsKey(type);
         }
 
 
-        private IList GetFilledList(Type propertyType, FillerSetupItem currentSetupItem, HashStack<Type> typeTracker)
+        private IList GetFilledList(TypeInfo propertyType, FillerSetupItem currentSetupItem, HashStack<TypeInfo> typeTracker)
         {
-            Type genType = propertyType.GetGenericArguments()[0];
+            var genType = propertyType.GenericTypeArguments[0].GetTypeInfo();
 
             if (CheckForCircularReference(genType, typeTracker, currentSetupItem))
             {
@@ -368,21 +389,21 @@ namespace Tynamix.ObjectFiller
             }
 
             IList list;
-            if (!propertyType.IsInterface && propertyType.GetInterfaces().Any(x => x.GetGenericTypeDefinition() == typeof(ICollection<>)))
+            if (!propertyType.IsInterface && propertyType.ImplementedInterfaces.Any(x => x.GetGenericTypeDefinition() == typeof(ICollection<>)))
             {
-                list = (IList)Activator.CreateInstance(propertyType);
+                list = (IList)Activator.CreateInstance(propertyType.AsType());
             }
             else if (propertyType.IsGenericType
                 && propertyType.GetGenericTypeDefinition() == typeof(IEnumerable<>)
-                   || propertyType.GetInterfaces().Any(x => x.GetGenericTypeDefinition() == typeof(IEnumerable<>)))
+                   || propertyType.ImplementedInterfaces.Any(x => x.GetGenericTypeDefinition() == typeof(IEnumerable<>)))
             {
                 Type openListType = typeof(List<>);
-                Type genericListType = openListType.MakeGenericType(genType);
+                Type genericListType = openListType.MakeGenericType(genType.AsType());
                 list = (IList)Activator.CreateInstance(genericListType);
             }
             else
             {
-                list = (IList)Activator.CreateInstance(propertyType);
+                list = (IList)Activator.CreateInstance(propertyType.AsType());
             }
 
 
@@ -395,7 +416,7 @@ namespace Tynamix.ObjectFiller
             return list;
         }
 
-        private object CreateInstanceOfInterfaceOrAbstractClass(Type interfaceType, FillerSetupItem setupItem, HashStack<Type> typeTracker)
+        private object CreateInstanceOfInterfaceOrAbstractClass(TypeInfo interfaceType, FillerSetupItem setupItem, HashStack<TypeInfo> typeTracker)
         {
             object result;
             if (setupItem.TypeToRandomFunc.ContainsKey(interfaceType))
@@ -404,7 +425,7 @@ namespace Tynamix.ObjectFiller
             }
             if (setupItem.InterfaceToImplementation.ContainsKey(interfaceType))
             {
-                Type implType = setupItem.InterfaceToImplementation[interfaceType];
+                TypeInfo implType = setupItem.InterfaceToImplementation[interfaceType];
                 result = CreateInstanceOfType(implType, setupItem, typeTracker);
             }
             else
@@ -416,15 +437,15 @@ namespace Tynamix.ObjectFiller
                     throw new InvalidOperationException(message);
                 }
 
-                MethodInfo method = setupItem.InterfaceMocker.GetType().GetMethod("Create");
-                MethodInfo genericMethod = method.MakeGenericMethod(new[] { interfaceType });
+                MethodInfo method = setupItem.InterfaceMocker.GetType().GetTypeInfo().GetDeclaredMethod("Create");
+                MethodInfo genericMethod = method.MakeGenericMethod(new[] { interfaceType.AsType() });
                 result = genericMethod.Invoke(setupItem.InterfaceMocker, null);
             }
             FillInternal(result, typeTracker);
             return result;
         }
 
-        private object GetRandomValue(Type propertyType, FillerSetupItem setupItem)
+        private object GetRandomValue(TypeInfo propertyType, FillerSetupItem setupItem)
         {
             if (setupItem.TypeToRandomFunc.ContainsKey(propertyType))
             {
@@ -441,16 +462,16 @@ namespace Tynamix.ObjectFiller
             throw new TypeInitializationException(propertyType.FullName, new Exception(message));
         }
 
-        private static object GetDefaultValueOfType(Type propertyType)
+        private static object GetDefaultValueOfType(TypeInfo propertyType)
         {
             if (propertyType.IsValueType)
             {
-                return Activator.CreateInstance(propertyType);
+                return Activator.CreateInstance(propertyType.AsType());
             }
             return null;
         }
 
-        private static bool TypeIsValidForObjectFiller(Type type, FillerSetupItem currentSetupItem)
+        private static bool TypeIsValidForObjectFiller(TypeInfo type, FillerSetupItem currentSetupItem)
         {
             return HasTypeARandomFunc(type, currentSetupItem)
                    || (TypeIsList(type) && ListParamTypeIsValid(type, currentSetupItem))
@@ -462,57 +483,57 @@ namespace Tynamix.ObjectFiller
 
         }
 
-        private static bool DictionaryParamTypesAreValid(Type type, FillerSetupItem currentSetupItem)
+        private static bool DictionaryParamTypesAreValid(TypeInfo type, FillerSetupItem currentSetupItem)
         {
             if (!TypeIsDictionary(type))
             {
                 return false;
             }
 
-            Type keyType = type.GetGenericArguments()[0];
-            Type valueType = type.GetGenericArguments()[1];
+            var keyType = type.GenericTypeArguments[0].GetTypeInfo();
+            var valueType = type.GenericTypeArguments[1].GetTypeInfo();
 
             return TypeIsValidForObjectFiller(keyType, currentSetupItem) &&
                    TypeIsValidForObjectFiller(valueType, currentSetupItem);
         }
 
-        private static bool ListParamTypeIsValid(Type type, FillerSetupItem setupItem)
+        private static bool ListParamTypeIsValid(TypeInfo type, FillerSetupItem setupItem)
         {
             if (!TypeIsList(type))
             {
                 return false;
             }
-            Type genType = type.GetGenericArguments()[0];
+            var genType = type.GenericTypeArguments[0].GetTypeInfo();
 
             return TypeIsValidForObjectFiller(genType, setupItem);
         }
 
-        private static bool TypeIsPoco(Type type)
+        private static bool TypeIsPoco(TypeInfo type)
         {
             return !type.IsValueType
                    && !type.IsArray
                    && type.IsClass
-                   && type.GetProperties().Length > 0
+                   && type.DeclaredProperties.Any()
                    && (type.Namespace == null
                        || (!type.Namespace.StartsWith("System")
                            && !type.Namespace.StartsWith("Microsoft")));
         }
 
-        private static bool TypeIsDictionary(Type type)
+        private static bool TypeIsDictionary(TypeInfo type)
         {
-            return type.GetInterfaces().Any(x => x == typeof(IDictionary));
+            return type.ImplementedInterfaces.Any(x => x == typeof(IDictionary));
         }
 
-        private static bool TypeIsList(Type type)
+        private static bool TypeIsList(TypeInfo type)
         {
             return !type.IsArray
                       && type.IsGenericType
-                      && type.GetGenericArguments().Length != 0
+                      && type.GenericTypeArguments.Length != 0
                       && (type.GetGenericTypeDefinition() == typeof(IEnumerable<>)
-                        || type.GetInterfaces().Any(x => x == typeof(IEnumerable)));
+                        || type.ImplementedInterfaces.Any(x => x == typeof(IEnumerable)));
         }
 
-        private static bool TypeIsEnum(Type type)
+        private static bool TypeIsEnum(TypeInfo type)
         {
             return type.IsEnum;
         }

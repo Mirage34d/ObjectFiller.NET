@@ -149,7 +149,11 @@ namespace Tynamix.ObjectFiller
                     for (var k = 0; k < words; k++)
                     {
                         var word = array[rnd.Next(array.Length)];
-                        if (k == 0) word = System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(word);
+                        if (k == 0)
+                        {
+                            //word = System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(word);
+                        }
+
                         result.Append(word);
                         result.Append(k == words - 1 ? ". " : " ");
                     }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 
 namespace Tynamix.ObjectFiller
 {
@@ -37,7 +38,7 @@ namespace Tynamix.ObjectFiller
         /// <returns>Main FluentFiller API</returns>
         public FluentFillerApi<TTargetObject> Use(Func<TTargetType> randomizerFunc)
         {
-            _setupManager.GetFor<TTargetObject>().TypeToRandomFunc[typeof(TTargetType)] = () => randomizerFunc();
+            _setupManager.GetFor<TTargetObject>().TypeToRandomFunc[typeof(TTargetType).GetTypeInfo()] = () => randomizerFunc();
             return _callback;
         }
 
@@ -83,7 +84,7 @@ namespace Tynamix.ObjectFiller
         public FluentFillerApi<TTargetObject> CreateInstanceOf<TImplementation>()
             where TImplementation : class,TTargetType
         {
-            _setupManager.GetFor<TTargetObject>().InterfaceToImplementation.Add(typeof(TTargetType), typeof(TImplementation));
+            _setupManager.GetFor<TTargetObject>().InterfaceToImplementation.Add(typeof(TTargetType).GetTypeInfo(), typeof(TImplementation).GetTypeInfo());
 
             return _callback;
         }
